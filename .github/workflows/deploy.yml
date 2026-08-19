@@ -179,9 +179,16 @@ jobs:
       run: "wget --timeout=30 --tries=3 -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key\
         \ \\\n  | gpg --dearmor \\\n  | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null\n\
         echo \"deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb\
-        \ generic main\" \\\n  | sudo tee /etc/apt/sources.list.d/trivy.list\nsudo\
-        \ apt-get update -qq\nsudo apt-get install -y --no-install-recommends trivy\n\
-        trivy --version\n"
+        \ generic main\" \\\n  | sudo tee /etc/apt/sources.list.d/trivy.list\n# Scoped\
+        \ to the trivy list alone: the stock update refreshes every\n# mirror the\
+        \ runner knows, none of which this step needs. Both calls\n# are bounded so\
+        \ a stalled mirror is a readable failure in minutes,\n# never a hang (the\
+        \ trivy deb has no dependencies, so the runner's\n# own package lists are\
+        \ already sufficient for the install).\nsudo apt-get update -qq \\\n  -o Dir::Etc::sourcelist=sources.list.d/trivy.list\
+        \ \\\n  -o Dir::Etc::sourceparts=- \\\n  -o APT::Get::List-Cleanup=0 \\\n\
+        \  -o Acquire::http::Timeout=30 -o Acquire::Retries=2\nsudo apt-get install\
+        \ -y --no-install-recommends \\\n  -o Acquire::http::Timeout=30 -o Acquire::Retries=2\
+        \ \\\n  trivy\ntrivy --version\n"
     - name: Terraform security scan
       run: trivy config infra --severity CRITICAL --exit-code 1 --ignorefile .trivyignore
     - name: Terraform security report
@@ -270,9 +277,16 @@ jobs:
       run: "wget --timeout=30 --tries=3 -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key\
         \ \\\n  | gpg --dearmor \\\n  | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null\n\
         echo \"deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb\
-        \ generic main\" \\\n  | sudo tee /etc/apt/sources.list.d/trivy.list\nsudo\
-        \ apt-get update -qq\nsudo apt-get install -y --no-install-recommends trivy\n\
-        trivy --version\n"
+        \ generic main\" \\\n  | sudo tee /etc/apt/sources.list.d/trivy.list\n# Scoped\
+        \ to the trivy list alone: the stock update refreshes every\n# mirror the\
+        \ runner knows, none of which this step needs. Both calls\n# are bounded so\
+        \ a stalled mirror is a readable failure in minutes,\n# never a hang (the\
+        \ trivy deb has no dependencies, so the runner's\n# own package lists are\
+        \ already sufficient for the install).\nsudo apt-get update -qq \\\n  -o Dir::Etc::sourcelist=sources.list.d/trivy.list\
+        \ \\\n  -o Dir::Etc::sourceparts=- \\\n  -o APT::Get::List-Cleanup=0 \\\n\
+        \  -o Acquire::http::Timeout=30 -o Acquire::Retries=2\nsudo apt-get install\
+        \ -y --no-install-recommends \\\n  -o Acquire::http::Timeout=30 -o Acquire::Retries=2\
+        \ \\\n  trivy\ntrivy --version\n"
     - name: Resolve image reference
       run: 'ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 
