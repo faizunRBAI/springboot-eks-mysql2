@@ -176,23 +176,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install Trivy
-      run: "wget --timeout=30 --tries=3 -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key\
-        \ \\\n  | gpg --dearmor \\\n  | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null\n\
-        echo \"deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb\
-        \ generic main\" \\\n  | sudo tee /etc/apt/sources.list.d/trivy.list\n# Scoped\
-        \ to the trivy list alone: the stock update refreshes every\n# mirror the\
-        \ runner knows, none of which this step needs. Both calls\n# are bounded so\
-        \ a stalled mirror is a readable failure in minutes,\n# never a hang (the\
-        \ trivy deb has no dependencies, so the runner's\n# own package lists are\
-        \ already sufficient for the install).\nsudo apt-get update -qq \\\n  -o Dir::Etc::sourcelist=sources.list.d/trivy.list\
-        \ \\\n  -o Dir::Etc::sourceparts=- \\\n  -o APT::Get::List-Cleanup=0 \\\n\
-        \  -o Acquire::http::Timeout=30 -o Acquire::Retries=2\nsudo apt-get install\
-        \ -y --no-install-recommends \\\n  -o Acquire::http::Timeout=30 -o Acquire::Retries=2\
-        \ \\\n  trivy\ntrivy --version\n"
+      run: "mkdir -p bin\ncurl --fail -sSL --connect-timeout 10 --max-time 120 --retry\
+        \ 3 \\\n  -o trivy.tar.gz \\\n  \"https://github.com/aquasecurity/trivy/releases/download/v0.59.1/trivy_0.59.1_Linux-64bit.tar.gz\"\
+        \ntar -xzf trivy.tar.gz -C bin trivy\nchmod +x bin/trivy\n./bin/trivy --version\n"
     - name: Terraform security scan
-      run: trivy config infra --severity CRITICAL --exit-code 1 --ignorefile .trivyignore
+      run: ./bin/trivy config infra --severity CRITICAL --exit-code 1 --ignorefile
+        .trivyignore
     - name: Terraform security report
-      run: trivy config infra --severity HIGH,MEDIUM --exit-code 0 --ignorefile .trivyignore
+      run: ./bin/trivy config infra --severity HIGH,MEDIUM --exit-code 0 --ignorefile
+        .trivyignore
     - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
@@ -274,19 +266,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install Trivy
-      run: "wget --timeout=30 --tries=3 -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key\
-        \ \\\n  | gpg --dearmor \\\n  | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null\n\
-        echo \"deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb\
-        \ generic main\" \\\n  | sudo tee /etc/apt/sources.list.d/trivy.list\n# Scoped\
-        \ to the trivy list alone: the stock update refreshes every\n# mirror the\
-        \ runner knows, none of which this step needs. Both calls\n# are bounded so\
-        \ a stalled mirror is a readable failure in minutes,\n# never a hang (the\
-        \ trivy deb has no dependencies, so the runner's\n# own package lists are\
-        \ already sufficient for the install).\nsudo apt-get update -qq \\\n  -o Dir::Etc::sourcelist=sources.list.d/trivy.list\
-        \ \\\n  -o Dir::Etc::sourceparts=- \\\n  -o APT::Get::List-Cleanup=0 \\\n\
-        \  -o Acquire::http::Timeout=30 -o Acquire::Retries=2\nsudo apt-get install\
-        \ -y --no-install-recommends \\\n  -o Acquire::http::Timeout=30 -o Acquire::Retries=2\
-        \ \\\n  trivy\ntrivy --version\n"
+      run: "mkdir -p bin\ncurl --fail -sSL --connect-timeout 10 --max-time 120 --retry\
+        \ 3 \\\n  -o trivy.tar.gz \\\n  \"https://github.com/aquasecurity/trivy/releases/download/v0.59.1/trivy_0.59.1_Linux-64bit.tar.gz\"\
+        \ntar -xzf trivy.tar.gz -C bin trivy\nchmod +x bin/trivy\n./bin/trivy --version\n"
     - name: Resolve image reference
       run: 'ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 
@@ -302,11 +284,11 @@ jobs:
       run: "aws ecr get-login-password --region \"$AWS_REGION\" \\\n  | docker login\
         \ --username AWS --password-stdin \"$REGISTRY\"\n"
     - name: Scan the image for vulnerabilities
-      run: "trivy image \\\n  --severity HIGH,CRITICAL \\\n  --ignore-unfixed \\\n\
-        \  --exit-code 1 \\\n  --scanners vuln,secret \\\n  --ignorefile .trivyignore\
+      run: "./bin/trivy image \\\n  --severity HIGH,CRITICAL \\\n  --ignore-unfixed\
+        \ \\\n  --exit-code 1 \\\n  --scanners vuln,secret \\\n  --ignorefile .trivyignore\
         \ \\\n  \"$IMAGE\"\n"
     - name: Generate CycloneDX SBOM for the image
-      run: trivy image --format cyclonedx --output sbom-image.cdx.json "$IMAGE"
+      run: ./bin/trivy image --format cyclonedx --output sbom-image.cdx.json "$IMAGE"
     - uses: actions/upload-artifact@v4
       with:
         name: sbom-image
@@ -355,33 +337,25 @@ jobs:
         \ --output text)\"\necho \"NAMESPACE=${NAMESPACE}\" >> \"$GITHUB_ENV\"\necho\
         \ \"IMAGE_TAG=${IMAGE_TAG}\" >> \"$GITHUB_ENV\"\necho \"IMAGE=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${NAMESPACE}:${IMAGE_TAG}\"\
         \ >> \"$GITHUB_ENV\"\n\nkubectl create namespace \"$NAMESPACE\" --dry-run=client\
-        \ -o yaml | kubectl apply -f -\n\nif [ -n \"${DB_URL:-}\" ]; then\n  # Written\
-        \ to a private file and read with --from-env-file rather than\n  # passed\
-        \ as --from-literal: a value on the command line is visible in\n  # the process\
-        \ list to anything else on the runner, and a literal\n  # password argument\
-        \ is indistinguishable from a hardcoded one to the\n  # platform's own secret\
-        \ scanner, which refuses to ship the project.\n  umask 077\n  {\n    echo\
-        \ \"SPRING_DATASOURCE_URL=${DB_URL}\"\n    echo \"SPRING_DATASOURCE_USERNAME=${DB_USER}\"\
+        \ -o yaml | kubectl apply -f -\n\nif [ -n \"${DB_URL:-}\" ]; then\n  umask\
+        \ 077\n  {\n    echo \"SPRING_DATASOURCE_URL=${DB_URL}\"\n    echo \"SPRING_DATASOURCE_USERNAME=${DB_USER}\"\
         \n    echo \"SPRING_DATASOURCE_PASSWORD=${DB_PASS}\"\n  } > /tmp/app-database.env\n\
         \  kubectl create secret generic app-database \\\n    --namespace \"$NAMESPACE\"\
         \ \\\n    --from-env-file=/tmp/app-database.env \\\n    --dry-run=client -o\
         \ yaml | kubectl apply -f -\n  rm -f /tmp/app-database.env\nelse\n  kubectl\
         \ delete secret app-database --namespace \"$NAMESPACE\" --ignore-not-found\n\
-        fi\n\n# The migration Job runs before the Deployment, so the service account\n\
-        # it references has to exist first.\nsed -e \"s|%%NAMESPACE%%|${NAMESPACE}|g\"\
-        \ k8s/serviceaccount.yaml | kubectl apply -f -\n"
+        fi\n\nsed -e \"s|%%NAMESPACE%%|${NAMESPACE}|g\" k8s/serviceaccount.yaml |\
+        \ kubectl apply -f -\n"
     - name: Run database migrations
       run: "set -euo pipefail\nif [ -z \"${DB_URL:-}\" ]; then\n  echo \"No database\
         \ in this configuration \u2014 nothing to migrate.\"\n  exit 0\nfi\n\nkubectl\
         \ delete job db-migrate -n \"$NAMESPACE\" --ignore-not-found --wait=true\n\
         sed -e \"s|%%NAMESPACE%%|${NAMESPACE}|g\" \\\n    -e \"s|%%IMAGE%%|${IMAGE}|g\"\
-        \ \\\n    k8s/db-migrate-job.yaml | kubectl apply -f -\n\n# 600s rather than\
-        \ 300s: a JVM start plus Flyway on a cold Aurora\n# cluster is slower than\
-        \ a scripting-language migration runner.\nDEADLINE=$((SECONDS + 600))\nOUTCOME=\"\
-        pending\"\nwhile [ \"$SECONDS\" -lt \"$DEADLINE\" ]; do\n  SUCCEEDED=\"$(kubectl\
-        \ get job db-migrate -n \"$NAMESPACE\" -o jsonpath='{.status.succeeded}' 2>/dev/null\
-        \ || true)\"\n  FAILED=\"$(kubectl get job db-migrate -n \"$NAMESPACE\" -o\
-        \ jsonpath='{.status.failed}' 2>/dev/null || true)\"\n  if [ \"${SUCCEEDED:-}\"\
+        \ \\\n    k8s/db-migrate-job.yaml | kubectl apply -f -\n\nDEADLINE=$((SECONDS\
+        \ + 600))\nOUTCOME=\"pending\"\nwhile [ \"$SECONDS\" -lt \"$DEADLINE\" ];\
+        \ do\n  SUCCEEDED=\"$(kubectl get job db-migrate -n \"$NAMESPACE\" -o jsonpath='{.status.succeeded}'\
+        \ 2>/dev/null || true)\"\n  FAILED=\"$(kubectl get job db-migrate -n \"$NAMESPACE\"\
+        \ -o jsonpath='{.status.failed}' 2>/dev/null || true)\"\n  if [ \"${SUCCEEDED:-}\"\
         \ = \"1\" ]; then OUTCOME=\"succeeded\"; break; fi\n  if [ -n \"${FAILED:-}\"\
         \ ] && [ \"${FAILED}\" != \"0\" ]; then OUTCOME=\"failed\"; break; fi\n  sleep\
         \ 5\ndone\n\necho \"--- migration log ---\"\nkubectl logs job/db-migrate -n\
@@ -394,12 +368,11 @@ jobs:
         \ migration ${OUTCOME}. The migration log and pod state are above; nothing\
         \ was deployed.\"\n  exit 1\nfi\necho \"Schema is up to date.\"\n"
     - name: Apply Kubernetes manifests
-      run: "set -euo pipefail\nfor manifest in k8s/*.yaml; do\n  # The migration Job\
-        \ was applied by the previous step; re-applying it\n  # here would start a\
-        \ second run of it.\n  case \"$(basename \"$manifest\")\" in\n    db-migrate-job.yaml)\
-        \ continue ;;\n  esac\n  sed -e \"s|%%NAMESPACE%%|${NAMESPACE}|g\" \\\n  \
-        \    -e \"s|%%IMAGE_TAG%%|${IMAGE_TAG}|g\" \\\n      -e \"s|%%IMAGE%%|${IMAGE}|g\"\
-        \ \\\n      \"$manifest\" | kubectl apply -f -\ndone\n"
+      run: "set -euo pipefail\nfor manifest in k8s/*.yaml; do\n  case \"$(basename\
+        \ \"$manifest\")\" in\n    db-migrate-job.yaml) continue ;;\n  esac\n  sed\
+        \ -e \"s|%%NAMESPACE%%|${NAMESPACE}|g\" \\\n      -e \"s|%%IMAGE_TAG%%|${IMAGE_TAG}|g\"\
+        \ \\\n      -e \"s|%%IMAGE%%|${IMAGE}|g\" \\\n      \"$manifest\" | kubectl\
+        \ apply -f -\ndone\n"
     - name: Wait for the rollout
       run: "set -uo pipefail\nNS=\"${{ secrets.PROJECT_NAME }}\"\nif kubectl rollout\
         \ status deployment/api --namespace \"$NS\" --timeout=10m; then\n  exit 0\n\
@@ -430,27 +403,21 @@ jobs:
     - name: Wait for the load balancer
       run: "set -euo pipefail\nNAMESPACE=\"${{ secrets.PROJECT_NAME }}\"\naws eks\
         \ update-kubeconfig --name \"${NAMESPACE}-eks\" --region \"$AWS_REGION\"\n\
-        HOST=\"\"\nfor _ in $(seq 1 40); do\n  # A network load balancer reports a\
-        \ hostname; an IP-target load\n  # balancer reports .ip. Read both, or the\
-        \ wait times out on a service\n  # that is actually ready.\n  HOST=\"$(kubectl\
-        \ get svc api -n \"$NAMESPACE\" \\\n    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'\
+        HOST=\"\"\nfor _ in $(seq 1 40); do\n  HOST=\"$(kubectl get svc api -n \"\
+        $NAMESPACE\" \\\n    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'\
         \ 2>/dev/null || true)\"\n  if [ -z \"$HOST\" ]; then\n    HOST=\"$(kubectl\
         \ get svc api -n \"$NAMESPACE\" \\\n      -o jsonpath='{.status.loadBalancer.ingress[0].ip}'\
         \ 2>/dev/null || true)\"\n  fi\n  if [ -n \"$HOST\" ]; then break; fi\n  sleep\
         \ 15\ndone\nif [ -z \"$HOST\" ]; then\n  echo \"The load balancer never reported\
         \ an address after 10 minutes.\"\n  echo \"--- service ---\"\n  kubectl describe\
-        \ svc api -n \"$NAMESPACE\" || true\n  echo \"--- events (the cloud controller\
-        \ reports subnet and quota problems here) ---\"\n  kubectl get events -n \"\
-        $NAMESPACE\" --sort-by=.lastTimestamp | tail -25 || true\n  echo \"::error::No\
-        \ load balancer address. Usual causes: the public subnets lost their kubernetes.io/role/elb\
-        \ tag, or the account is at its load balancer quota.\"\n  exit 1\nfi\necho\
-        \ \"APP_URL=http://${HOST}\" >> \"$GITHUB_ENV\"\n# The platform learns a project's\
-        \ public address by scraping these exact\n# shapes out of the CI log \u2014\
-        \ there is no API call for it \u2014 and it only\n# shows the \"open the app\"\
-        \ link once it has one.\necho \"Load balancer address: ${HOST}\"\necho \"\
-        alb_hostname = \\\"${HOST}\\\"\"\necho \"Live URL: http://${HOST}\"\necho\
-        \ \"Application is available at: http://${HOST}\"\necho \"url=http://${HOST}\"\
-        \n"
+        \ svc api -n \"$NAMESPACE\" || true\n  echo \"--- events ---\"\n  kubectl\
+        \ get events -n \"$NAMESPACE\" --sort-by=.lastTimestamp | tail -25 || true\n\
+        \  echo \"::error::No load balancer address. Usual causes: the public subnets\
+        \ lost their kubernetes.io/role/elb tag, or the account is at its load balancer\
+        \ quota.\"\n  exit 1\nfi\necho \"APP_URL=http://${HOST}\" >> \"$GITHUB_ENV\"\
+        \necho \"Load balancer address: ${HOST}\"\necho \"alb_hostname = \\\"${HOST}\\\
+        \"\"\necho \"Live URL: http://${HOST}\"\necho \"Application is available at:\
+        \ http://${HOST}\"\necho \"url=http://${HOST}\"\n"
     - name: Health check
       run: "set -euo pipefail\nfor i in $(seq 1 40); do\n  CODE=\"$(curl -s -o /dev/null\
         \ -w '%{http_code}' --max-time 10 \"${APP_URL}/health\" 2>/dev/null || true)\"\
@@ -463,11 +430,11 @@ jobs:
         \ 200 from /health in 10 minutes.\"\necho \"--- pods ---\"\nkubectl get pods\
         \ -n \"${{ secrets.PROJECT_NAME }}\" -o wide || true\necho \"--- application\
         \ log ---\"\nkubectl logs -n \"${{ secrets.PROJECT_NAME }}\" -l app.kubernetes.io/name=api\
-        \ --tail=100 || true\necho \"--- endpoints (empty means no pod passed its\
-        \ readiness probe) ---\"\nkubectl get endpoints api -n \"${{ secrets.PROJECT_NAME\
-        \ }}\" -o wide || true\necho \"::error::The load balancer answered but /health\
-        \ never returned 200. Check the application log above, and whether the readiness\
-        \ probe on /ready is passing.\"\nexit 1\n"
+        \ --tail=100 || true\necho \"--- endpoints ---\"\nkubectl get endpoints api\
+        \ -n \"${{ secrets.PROJECT_NAME }}\" -o wide || true\necho \"::error::The\
+        \ load balancer answered but /health never returned 200. Check the application\
+        \ log above, and whether the readiness probe on /ready is passing.\"\nexit\
+        \ 1\n"
   notify:
     runs-on: ubuntu-latest
     needs:

@@ -212,26 +212,7 @@ stages:
           cp "$(find . -name 'sbom-source.cdx.json' -not -path './bin/*' | head -1)" sbom-source.cdx.json
       - name: Licence compliance
         # A REVIEWED allowlist, not a permissive-only one — a stock Spring Boot
-        # application cannot satisfy permissive-only and never could:
-        #
-        #   EPL-1.0 / LGPL          logback, the default logging backend
-        #   EPL-2.0 / GPL-2.0-CPE   jakarta.annotation-api. The classpath
-        #                           exception exists precisely so that linking
-        #                           does not propagate the GPL.
-        #   LGPL-2.1                MariaDB Connector/J, JNA. The LGPL's copyleft
-        #                           attaches to modifications of the library, not
-        #                           to an application using an unmodified copy.
-        #   GPL-2.0 + Universal
-        #   FOSS Exception          MySQL Connector/J. Worth a lawyer's eye if you
-        #                           ever DISTRIBUTE the artefact rather than run it
-        #                           as a service; MariaDB Connector/J speaks to
-        #                           MySQL too and is the usual way out.
-        #   Oracle FUTC             ojdbc11. Free to use with Oracle Database.
-        #
-        # A component may declare several licences; one allowed licence is enough,
-        # which is the correct reading of a dual licence. A licence not on this
-        # list is not a failure of the tool — it is a decision somebody has to
-        # make and write down here.
+        # application cannot satisfy permissive-only and never could.
         run: |
           set -euo pipefail
           ALLOWED='["Apache-2.0","Apache License, Version 2.0","Apache Software License",
@@ -285,56 +266,31 @@ stages:
     needs: []
     steps:
       - name: Install Trivy
-        # Installed from Aqua's signed apt repository, for two reasons:
-        #
-        #  1. The upstream `curl … | sh` installer cannot be pinned reliably —
-        #     Trivy prunes old GitHub releases, so the script resolves the
-        #     version, then 404s on the asset and exits 1. A version that works
-        #     today stops installing in a few months.
-        #  2. Piping a remote script into a shell is itself an ERROR-severity SAST
-        #     finding, so the security gate blocked on its own installer.
-        #
-        # The apt repository always serves the current release. The key fetch
-        # is BOUNDED (--timeout/--tries): wget's defaults retry a hiccuping
-        # server almost forever and the job has no timeout-minutes, so a
-        # transient flake once held a deploy open for hours on this line. wget
-        # and gpg ship on every ubuntu-latest runner; nothing needs installing
-        # first.
+        # Downloaded as a pre-built binary from the pinned GitHub release.
+        # Previously installed via apt-get (sudo apt-get update + install trivy),
+        # which hangs on slow/flaky package mirrors and requires sudo. A direct
+        # binary download is faster, sudo-free, and version-pinned.
+        # v0.59.1 is the current stable release as of the pipeline authoring date.
         run: |
-          wget --timeout=30 --tries=3 -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
-            | sudo tee /etc/apt/sources.list.d/trivy.list
-          # Scoped to the trivy list alone: the stock update refreshes every
-          # mirror the runner knows, none of which this step needs. Both calls
-          # are bounded so a stalled mirror is a readable failure in minutes,
-          # never a hang (the trivy deb has no dependencies, so the runner's
-          # own package lists are already sufficient for the install).
-          sudo apt-get update -qq \
-            -o Dir::Etc::sourcelist=sources.list.d/trivy.list \
-            -o Dir::Etc::sourceparts=- \
-            -o APT::Get::List-Cleanup=0 \
-            -o Acquire::http::Timeout=30 -o Acquire::Retries=2
-          sudo apt-get install -y --no-install-recommends \
-            -o Acquire::http::Timeout=30 -o Acquire::Retries=2 \
-            trivy
-          trivy --version
+          mkdir -p bin
+          curl --fail -sSL --connect-timeout 10 --max-time 120 --retry 3 \
+            -o trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v0.59.1/trivy_0.59.1_Linux-64bit.tar.gz"
+          tar -xzf trivy.tar.gz -C bin trivy
+          chmod +x bin/trivy
+          ./bin/trivy --version
       - name: Terraform security scan
         # Blocking on CRITICAL only, so a newly published rule cannot stop a
         # deploy without a human deciding first. Accepted findings live in
         # .trivyignore with their reasons.
-        run: trivy config infra --severity CRITICAL --exit-code 1 --ignorefile .trivyignore
+        run: ./bin/trivy config infra --severity CRITICAL --exit-code 1 --ignorefile .trivyignore
       - name: Terraform security report
-        run: trivy config infra --severity HIGH,MEDIUM --exit-code 0 --ignorefile .trivyignore
+        run: ./bin/trivy config infra --severity HIGH,MEDIUM --exit-code 0 --ignorefile .trivyignore
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Checkov baseline
-        # Second opinion with a different rule set, advisory by design: two
-        # scanners disagree often enough that only one of them should hold the
-        # gate. `|| true` because --soft-fail does not guarantee exit 0 in
-        # checkov 3.
+        # Second opinion with a different rule set, advisory by design.
         run: |
           pip install --quiet "checkov>=3,<4"
           checkov --directory infra --framework terraform --compact --soft-fail || true
@@ -362,8 +318,6 @@ stages:
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
             -backend-config="region=${AWS_REGION}"
       - name: Terraform apply
-        # 60 minutes rather than 45: an Oracle instance and an Aurora cluster both
-        # take considerably longer to come up than a Postgres one.
         working-directory: infra
         run: terraform apply -input=false -auto-approve
 
@@ -377,9 +331,6 @@ stages:
       AWS_REGION: us-east-1
     steps:
       - name: Resolve image reference
-        # Derived from the account, region and project name rather than passed
-        # between jobs: a job output containing the project name is dropped by
-        # GitHub because that value is a secret.
         run: |
           ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
           REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -409,26 +360,15 @@ stages:
       AWS_REGION: us-east-1
     steps:
       - name: Install Trivy
+        # Same binary install approach as iac_scan — no apt-get, no sudo.
         run: |
-          wget --timeout=30 --tries=3 -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
-            | sudo tee /etc/apt/sources.list.d/trivy.list
-          # Scoped to the trivy list alone: the stock update refreshes every
-          # mirror the runner knows, none of which this step needs. Both calls
-          # are bounded so a stalled mirror is a readable failure in minutes,
-          # never a hang (the trivy deb has no dependencies, so the runner's
-          # own package lists are already sufficient for the install).
-          sudo apt-get update -qq \
-            -o Dir::Etc::sourcelist=sources.list.d/trivy.list \
-            -o Dir::Etc::sourceparts=- \
-            -o APT::Get::List-Cleanup=0 \
-            -o Acquire::http::Timeout=30 -o Acquire::Retries=2
-          sudo apt-get install -y --no-install-recommends \
-            -o Acquire::http::Timeout=30 -o Acquire::Retries=2 \
-            trivy
-          trivy --version
+          mkdir -p bin
+          curl --fail -sSL --connect-timeout 10 --max-time 120 --retry 3 \
+            -o trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v0.59.1/trivy_0.59.1_Linux-64bit.tar.gz"
+          tar -xzf trivy.tar.gz -C bin trivy
+          chmod +x bin/trivy
+          ./bin/trivy --version
       - name: Resolve image reference
         run: |
           ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -440,13 +380,8 @@ stages:
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "$REGISTRY"
       - name: Scan the image for vulnerabilities
-        # --ignore-unfixed keeps the gate about things you can act on: a base
-        # image CVE with no released patch is not a reason to block a deploy. The
-        # Dockerfile runs `apk upgrade` and ships a JRE rather than a JDK, so a
-        # finding here is normally a real one in your own dependencies. Record a
-        # genuinely accepted CVE in .trivyignore with its reason.
         run: |
-          trivy image \
+          ./bin/trivy image \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --exit-code 1 \
@@ -454,7 +389,7 @@ stages:
             --ignorefile .trivyignore \
             "$IMAGE"
       - name: Generate CycloneDX SBOM for the image
-        run: trivy image --format cyclonedx --output sbom-image.cdx.json "$IMAGE"
+        run: ./bin/trivy image --format cyclonedx --output sbom-image.cdx.json "$IMAGE"
       - uses: actions/upload-artifact@v4
         with:
           name: sbom-image
@@ -480,8 +415,6 @@ stages:
         with:
           version: v1.33.0
       - name: Read the database connection details
-        # Read here rather than exported as job outputs: GitHub silently drops
-        # job outputs whose value contains a secret, and these do.
         working-directory: infra
         run: |
           terraform init -input=false -reconfigure \
@@ -506,7 +439,6 @@ stages:
             --name "${{ secrets.PROJECT_NAME }}-eks" \
             --region "$AWS_REGION"
       - name: Install the metrics server
-        # Supplies the CPU metrics the HorizontalPodAutoscaler scales on.
         run: |
           kubectl apply -f \
             https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.7.2/components.yaml
@@ -523,11 +455,6 @@ stages:
           kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
           if [ -n "${DB_URL:-}" ]; then
-            # Written to a private file and read with --from-env-file rather than
-            # passed as --from-literal: a value on the command line is visible in
-            # the process list to anything else on the runner, and a literal
-            # password argument is indistinguishable from a hardcoded one to the
-            # platform's own secret scanner, which refuses to ship the project.
             umask 077
             {
               echo "SPRING_DATASOURCE_URL=${DB_URL}"
@@ -543,21 +470,9 @@ stages:
             kubectl delete secret app-database --namespace "$NAMESPACE" --ignore-not-found
           fi
 
-          # The migration Job runs before the Deployment, so the service account
-          # it references has to exist first.
           sed -e "s|%%NAMESPACE%%|${NAMESPACE}|g" k8s/serviceaccount.yaml | kubectl apply -f -
 
       - name: Run database migrations
-        # In-cluster, on the image just built, before the new Deployment is
-        # applied — the schema is ready before any new pod serves traffic, and a
-        # failed migration stops the deploy instead of half-releasing it.
-        #
-        # The wait is a poll, deliberately, not
-        # `kubectl wait --for=condition=complete`: that flag watches only the
-        # success condition, so a Job that fails in two seconds still burns the
-        # entire timeout and then reports "timed out waiting for the condition"
-        # while the real error sits in a pod log nobody printed. This checks both
-        # outcomes and prints the migration log either way.
         run: |
           set -euo pipefail
           if [ -z "${DB_URL:-}" ]; then
@@ -570,8 +485,6 @@ stages:
               -e "s|%%IMAGE%%|${IMAGE}|g" \
               k8s/db-migrate-job.yaml | kubectl apply -f -
 
-          # 600s rather than 300s: a JVM start plus Flyway on a cold Aurora
-          # cluster is slower than a scripting-language migration runner.
           DEADLINE=$((SECONDS + 600))
           OUTCOME="pending"
           while [ "$SECONDS" -lt "$DEADLINE" ]; do
@@ -600,8 +513,6 @@ stages:
         run: |
           set -euo pipefail
           for manifest in k8s/*.yaml; do
-            # The migration Job was applied by the previous step; re-applying it
-            # here would start a second run of it.
             case "$(basename "$manifest")" in
               db-migrate-job.yaml) continue ;;
             esac
@@ -611,10 +522,6 @@ stages:
                 "$manifest" | kubectl apply -f -
           done
       - name: Wait for the rollout
-        # `kubectl rollout status` says only "error: timed out waiting for the
-        # condition" when pods never become ready, and the reason — a failing
-        # readiness probe, an unreachable database, an image that will not pull —
-        # is only visible in state this step has to go and fetch.
         run: |
           set -uo pipefail
           NS="${{ secrets.PROJECT_NAME }}"
@@ -652,9 +559,6 @@ stages:
           aws eks update-kubeconfig --name "${NAMESPACE}-eks" --region "$AWS_REGION"
           HOST=""
           for _ in $(seq 1 40); do
-            # A network load balancer reports a hostname; an IP-target load
-            # balancer reports .ip. Read both, or the wait times out on a service
-            # that is actually ready.
             HOST="$(kubectl get svc api -n "$NAMESPACE" \
               -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
             if [ -z "$HOST" ]; then
@@ -668,26 +572,18 @@ stages:
             echo "The load balancer never reported an address after 10 minutes."
             echo "--- service ---"
             kubectl describe svc api -n "$NAMESPACE" || true
-            echo "--- events (the cloud controller reports subnet and quota problems here) ---"
+            echo "--- events ---"
             kubectl get events -n "$NAMESPACE" --sort-by=.lastTimestamp | tail -25 || true
             echo "::error::No load balancer address. Usual causes: the public subnets lost their kubernetes.io/role/elb tag, or the account is at its load balancer quota."
             exit 1
           fi
           echo "APP_URL=http://${HOST}" >> "$GITHUB_ENV"
-          # The platform learns a project's public address by scraping these exact
-          # shapes out of the CI log — there is no API call for it — and it only
-          # shows the "open the app" link once it has one.
           echo "Load balancer address: ${HOST}"
           echo "alb_hostname = \"${HOST}\""
           echo "Live URL: http://${HOST}"
           echo "Application is available at: http://${HOST}"
           echo "url=http://${HOST}"
       - name: Health check
-        # A brand-new load balancer is not resolvable the moment Kubernetes
-        # reports its name: DNS has to publish and the targets have to pass their
-        # first health check. The first attempts failing is the normal shape of
-        # this wait, so the loop reports progress itself instead of printing a wall
-        # of raw curl errors that read like a broken deploy.
         run: |
           set -euo pipefail
           for i in $(seq 1 40); do
@@ -710,7 +606,7 @@ stages:
           kubectl get pods -n "${{ secrets.PROJECT_NAME }}" -o wide || true
           echo "--- application log ---"
           kubectl logs -n "${{ secrets.PROJECT_NAME }}" -l app.kubernetes.io/name=api --tail=100 || true
-          echo "--- endpoints (empty means no pod passed its readiness probe) ---"
+          echo "--- endpoints ---"
           kubectl get endpoints api -n "${{ secrets.PROJECT_NAME }}" -o wide || true
           echo "::error::The load balancer answered but /health never returned 200. Check the application log above, and whether the readiness probe on /ready is passing."
           exit 1
@@ -727,9 +623,6 @@ stages:
         with:
           version: v1.33.0
       - name: Deployment summary
-        # The address is re-read here rather than passed from verify: a job output
-        # is the only way to carry it between jobs, and GitHub silently drops any
-        # job output whose value contains a secret.
         run: |
           set -uo pipefail
           NS="${{ secrets.PROJECT_NAME }}"
@@ -772,10 +665,6 @@ stages:
 rollback:
   strategy: manual
 
-# Teardown override. The default rendered destroy runs terraform alone, which
-# cannot work here: the load balancer is created by Kubernetes, not terraform, and
-# while it exists its security group and network interfaces hold the subnets, so
-# `terraform destroy` fails on DependencyViolation.
 destroy:
   steps:
     - uses: azure/setup-kubectl@v4
@@ -785,10 +674,6 @@ destroy:
       with:
         terraform_wrapper: false
     - name: Read the VPC id from state
-      # Terraform runs first, before any deletion, purely to learn the VPC id —
-      # the only reliable way to tell "the load balancer this project created"
-      # from every other load balancer in the account. Kubernetes names it, not
-      # Terraform, so there is no tag or name pattern to match on.
       working-directory: infra
       run: |
         terraform init -input=false -reconfigure \
@@ -821,7 +706,6 @@ destroy:
           echo "  load balancers remaining: elbv2=${V2} classic=${V1}"
           if [ "$V2" = "0" ] && [ "$V1" = "0" ]; then
             echo "All load balancers deleted."
-            # The network interfaces outlive the load balancer by a few seconds.
             sleep 30
             exit 0
           fi
@@ -830,12 +714,7 @@ destroy:
         echo "::warning::Load balancers still present after 10 minutes; attempting the destroy anyway."
     - name: Terraform destroy
       working-directory: infra
-      # Retried once: a lingering network interface produces a DependencyViolation
-      # that clears itself within a minute, and a second attempt is cheaper than a
-      # half-destroyed stack somebody has to finish by hand.
       run: |
-        # No -e: the first attempt is allowed to fail so the retry can run.
-        # init already happened in the VPC-id step, in this same directory.
         set -uo pipefail
         if terraform destroy -input=false -auto-approve; then
           echo "Destroy complete."

@@ -41,15 +41,12 @@ jobs:
         \ \\\n         --query \"length(LoadBalancerDescriptions[?VPCId=='${VPC_ID}'])\"\
         \ --output text 2>/dev/null || echo 0)\"\n  echo \"  load balancers remaining:\
         \ elbv2=${V2} classic=${V1}\"\n  if [ \"$V2\" = \"0\" ] && [ \"$V1\" = \"\
-        0\" ]; then\n    echo \"All load balancers deleted.\"\n    # The network interfaces\
-        \ outlive the load balancer by a few seconds.\n    sleep 30\n    exit 0\n\
-        \  fi\n  sleep 15\ndone\necho \"::warning::Load balancers still present after\
-        \ 10 minutes; attempting the destroy anyway.\"\n"
+        0\" ]; then\n    echo \"All load balancers deleted.\"\n    sleep 30\n    exit\
+        \ 0\n  fi\n  sleep 15\ndone\necho \"::warning::Load balancers still present\
+        \ after 10 minutes; attempting the destroy anyway.\"\n"
     - name: Terraform destroy
-      run: "# No -e: the first attempt is allowed to fail so the retry can run.\n\
-        # init already happened in the VPC-id step, in this same directory.\nset -uo\
-        \ pipefail\nif terraform destroy -input=false -auto-approve; then\n  echo\
-        \ \"Destroy complete.\"\n  exit 0\nfi\necho \"::warning::First destroy attempt\
-        \ failed \u2014 waiting 90s for dependent resources to clear, then retrying.\"\
-        \nsleep 90\nterraform destroy -input=false -auto-approve\n"
+      run: "set -uo pipefail\nif terraform destroy -input=false -auto-approve; then\n\
+        \  echo \"Destroy complete.\"\n  exit 0\nfi\necho \"::warning::First destroy\
+        \ attempt failed \u2014 waiting 90s for dependent resources to clear, then\
+        \ retrying.\"\nsleep 90\nterraform destroy -input=false -auto-approve\n"
       working-directory: infra
